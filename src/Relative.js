@@ -1,10 +1,6 @@
 const slot = window["__sensor__"] = Symbol("__sensor__")
 let orientation = {}
 
-Object.defineProperty(orientation, "angle", {
-  get: () => { return (window.orientation || 0) }
-})
-
 const defineProperties = (target, descriptions) => {
   console.log('slot:', slot, typeof slot)
   for (const property in descriptions) {
@@ -14,6 +10,11 @@ const defineProperties = (target, descriptions) => {
     })
   }
 }
+
+Object.defineProperty(orientation, "angle", {
+  get: () => { return (window.orientation || 0) }
+})
+
 const defineReadonlyProperties = (target, slot, descriptions) => {
   const propertyBag = target[slot] || (target[slot] = new WeakMap)
   for (const property in descriptions) {
@@ -73,25 +74,6 @@ const SensorState = {
   IDLE: 1,
   ACTIVATING: 2,
   ACTIVE: 3,
-}
-
-class SensorErrorEvent extends Event {
-  constructor(type, errorEventInitDict) {
-    super(type, errorEventInitDict)
-
-    if (!errorEventInitDict || !errorEventInitDict.error instanceof DOMException) {
-      throw TypeError(
-        "Failed to construct 'SensorErrorEvent':" +
-        "2nd argument much contain 'error' property"
-      )
-    }
-
-    Object.defineProperty(this, "error", {
-      configurable: false,
-      writable: false,
-      value: errorEventInitDict.error
-    })
-  }
 }
 
 export class Sensor extends EventTarget {
@@ -262,6 +244,26 @@ const toMat4FromQuat = (mat, q) => {
   return mat
 }
 
+
+class SensorErrorEvent extends Event {
+  constructor(type, errorEventInitDict) {
+    super(type, errorEventInitDict)
+
+    if (!errorEventInitDict || !errorEventInitDict.error instanceof DOMException) {
+      throw TypeError(
+        "Failed to construct 'SensorErrorEvent':" +
+        "2nd argument much contain 'error' property"
+      )
+    }
+
+    Object.defineProperty(this, "error", {
+      configurable: false,
+      writable: false,
+      value: errorEventInitDict.error
+    })
+  }
+}
+
 const worldToScreen = (quaternion) => !quaternion ? null :
   rotateQuaternionByAxisAngle(
     quaternion,
@@ -269,11 +271,11 @@ const worldToScreen = (quaternion) => !quaternion ? null :
     - orientation.angle * Math.PI / 180
   )
 
-export const AbsoluteOrientationSensor = window.AbsoluteOrientationSensor ||
-  class AbsoluteOrientationSensor extends DeviceOrientationMixin(
-    Sensor, "deviceorientationabsolute", "deviceorientation") {
+export const RelativeOrientationSensor = window.RelativeOrientationSensor ||
+  class RelativeOrientationSensor extends DeviceOrientationMixin(Sensor, "deviceorientation") {
     constructor(options = {}) {
       super(options)
+
       switch (options.coordinateSystem || 'world') {
         case 'screen':
           Object.defineProperty(this, "quaternion", {
@@ -288,15 +290,13 @@ export const AbsoluteOrientationSensor = window.AbsoluteOrientationSensor ||
       }
 
       this[slot].handleEvent = event => {
-        // If absolute is set, or webkitCompassHeading exists,
-        // absolute values should be available.
-        const isAbsolute = event.absolute === true || "webkitCompassHeading" in event
-        const hasValue = event.alpha !== null || event.webkitCompassHeading !== undefined
-
-        if (!isAbsolute || !hasValue) {
-          // Spec: If an implementation can never provide absolute
-          // orientation information, the event should be fired with
-          // the alpha, beta and gamma attributes set to null.
+        // If there is no sensor we will get values equal to null.
+        if (event.absolute || event.alpha === null) {
+          // Spec: The implementation can still decide to provide
+          // absolute orientation if relative is not available or
+          // the resulting data is more accurate. In either case,
+          // the absolute property must be set accordingly to reflect
+          // the choice.
           this[slot].setState(SensorState.ERROR)
           return
         }
@@ -305,17 +305,15 @@ export const AbsoluteOrientationSensor = window.AbsoluteOrientationSensor ||
           this[slot].setState(SensorState.ACTIVE)
         }
 
-        this[slot].hasReading = true
         this[slot].timestamp = performance.now()
 
-        const heading = event.webkitCompassHeading != null ? 360 - event.webkitCompassHeading : event.alpha
-
         this[slot].quaternion = toQuaternionFromEuler(
-          heading,
+          event.alpha,
           event.beta,
           event.gamma
         )
 
+        this[slot].hasReading = true
         this.dispatchEvent(new Event("reading"))
       }
     }
@@ -329,44 +327,3 @@ export const AbsoluteOrientationSensor = window.AbsoluteOrientationSensor ||
       toMat4FromQuat(mat, this.quaternion)
     }
   }
-
-export const Gyroscope = window.Gyroscope || 
-class Gyroscope extends DeviceOrientationMixin(Sensor, "devicemotion") {
-  constructor(options) {
-    super(options);
-    this[slot].handleEvent = event => {
-      // If there is no sensor we will get values equal to null.
-      if (event.rotationRate.alpha === null) {
-        this[slot].setState(SensorState.ERROR);
-        return;
-      }
-
-      if (!this[slot].activated) {
-        this[slot].setState(SensorState.ACTIVE);
-      }
-
-      this[slot].timestamp = performance.now();
-
-      this[slot].x = event.rotationRate.alpha;
-      this[slot].y = event.rotationRate.beta;
-      this[slot].z = event.rotationRate.gamma;
-
-      this[slot].hasReading = true;
-      this.dispatchEvent(new Event("reading"));
-    }
-
-    defineReadonlyProperties(this, slot, {
-      x: null,
-      y: null,
-      z: null
-    });
-  }
-
-  stop() {
-    super.stop();
-    this[slot].x = null;
-    this[slot].y = null;
-    this[slot].z = null;
-  }
-}
-
